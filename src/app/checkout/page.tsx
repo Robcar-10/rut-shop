@@ -79,7 +79,27 @@ export default function CheckoutPage() {
           body: JSON.stringify({
             amount: Math.round(total * 100),
             email: form.email,
-            metadata: { firstName: form.firstName, lastName: form.lastName },
+            metadata: {
+              firstName: form.firstName,
+              lastName: form.lastName,
+              address: [form.address, form.apt, form.city, form.state, form.zip].filter(Boolean).join(", "),
+              shipMethod: form.shipMethod,
+              subtotal: subtotal.toFixed(2),
+              shipping: shipping.toFixed(2),
+              tax: tax.toFixed(2),
+              items: JSON.stringify(
+                items.map((item) => {
+                  const p = PRODUCTS.find((p) => p.id === item.productId);
+                  return {
+                    name: p?.name ?? item.productId,
+                    size: item.size,
+                    color: item.color ?? "",
+                    qty: item.qty,
+                    price: p?.salePrice ?? p?.price ?? 0,
+                  };
+                })
+              ).slice(0, 500),
+            },
           }),
         });
         const data = await res.json();

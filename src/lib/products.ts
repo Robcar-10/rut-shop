@@ -1,3 +1,5 @@
+import { readJson, writeJson, PRODUCTS_PATH } from "./blob-store";
+
 export interface ProductColor {
   name: string;
   hex: string;
@@ -369,4 +371,20 @@ export function findProduct(id: string): Product | undefined {
 
 export function formatPrice(amount: number): string {
   return "$" + amount.toFixed(2);
+}
+
+// Server-only: reads live products from Vercel Blob, falls back to static PRODUCTS
+export async function getProducts(): Promise<Product[]> {
+  try {
+    const fromBlob = await readJson<Product[]>(PRODUCTS_PATH);
+    if (fromBlob && fromBlob.length > 0) return fromBlob;
+  } catch {
+    // Blob not configured — fall through to static
+  }
+  return PRODUCTS;
+}
+
+// Server-only: persist product list to Blob
+export async function saveProducts(products: Product[]): Promise<void> {
+  await writeJson(PRODUCTS_PATH, products);
 }
