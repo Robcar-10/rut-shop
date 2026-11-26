@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import type { Product } from "@/lib/products";
-import type { StoredOrder } from "@/app/api/admin/orders/route";
+import type { StoredOrder } from "@/lib/orders";
 
 type Tab = "products" | "orders";
 
@@ -13,6 +13,8 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("products");
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<StoredOrder[]>([]);
+  const [legacyFile, setLegacyFile] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -23,9 +25,22 @@ export default function AdminDashboard() {
   }, []);
 
   const loadOrders = useCallback(async () => {
-    const res = await fetch("/api/admin/orders");
-    if (res.ok) setOrders(await res.json());
+    const res = await fetch("/api/admin/orders", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      setOrders(data.orders ?? []);
+      setLegacyFile(Boolean(data.legacyFile));
+      setOrdersError(null);
+    } else {
+      setOrdersError("Couldn't load orders from Stripe. Refresh to try again.");
+    }
   }, []);
+
+  const handleRemoveLegacy = async () => {
+    if (!confirm("Delete the old public order file? Download the backup first if you want a copy. Your orders stay in Stripe.")) return;
+    const res = await fetch("/api/admin/orders/legacy", { method: "DELETE" });
+    if (res.ok) setLegacyFile(false);
+  };
 
   useEffect(() => {
     Promise.all([loadProducts(), loadOrders()]).finally(() => setLoading(false));
@@ -109,7 +124,21 @@ export default function AdminDashboard() {
             onNew={() => router.push("/admin/products/new")}
           />
         ) : (
-          <OrdersTab orders={orders} />
+          <>
+            {legacyFile && (
+              <div role="alert" style={{ marginBottom: 20, background: "#FFF7E6", border: "1px solid #F5C26B", borderRadius: 16, padding: "16px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div style={{ fontSize: 14, color: "#6B4A00", lineHeight: 1.5, flex: "1 1 320px" }}>
+                  <strong>The old order file is still in public storage.</strong> Orders now come from Stripe. Download a backup, then delete the public file.
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <a href="/api/admin/orders/legacy" className="btn-ghost" style={{ padding: "10px 16px", fontSize: 13 }}>Download backup</a>
+                  <button onClick={handleRemoveLegacy} className="btn-primary" style={{ padding: "10px 16px", fontSize: 13 }}>Delete public file</button>
+                </div>
+              </div>
+            )}
+            {ordersError && <p role="alert" style={{ color: "var(--rut-destructive)", marginBottom: 16 }}>{ordersError}</p>}
+            <OrdersTab orders={orders} />
+          </>
         )}
       </div>
     </div>

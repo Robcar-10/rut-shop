@@ -2,11 +2,15 @@ import { NextResponse } from "next/server";
 import { revalidateTag } from "next/cache";
 import { getProducts, saveProducts } from "@/lib/products";
 import type { Product } from "@/lib/products";
+import { requireAdmin } from "@/lib/admin-guard";
 
 export async function PUT(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   const { id } = await params;
   const body = await req.json() as Partial<Product>;
 
@@ -31,6 +35,9 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   const { id } = await params;
 
   const products = await getProducts();

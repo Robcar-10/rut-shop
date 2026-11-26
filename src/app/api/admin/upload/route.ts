@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
+import { requireAdmin } from "@/lib/admin-guard";
 
 export async function POST(req: Request) {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   const form = await req.formData();
   const file = form.get("file") as File | null;
 

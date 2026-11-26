@@ -2,13 +2,20 @@ import { NextResponse } from "next/server";
 import { revalidateTag } from "next/cache";
 import { getProducts, saveProducts, PRODUCTS } from "@/lib/products";
 import type { Product } from "@/lib/products";
+import { requireAdmin } from "@/lib/admin-guard";
 
 export async function GET() {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   const products = await getProducts();
   return NextResponse.json(products);
 }
 
 export async function POST(req: Request) {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   const body = await req.json() as Product;
 
   if (!body.id || !body.name || !body.price) {
@@ -35,6 +42,9 @@ export async function POST(req: Request) {
 
 // Seed blob from static PRODUCTS (first-time setup)
 export async function PUT() {
+  const denied = await requireAdmin();
+  if (denied) return denied;
+
   await saveProducts(PRODUCTS);
   revalidateTag("products", "max");
   return NextResponse.json({ ok: true, seeded: PRODUCTS.length });

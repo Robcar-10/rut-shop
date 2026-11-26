@@ -9,6 +9,7 @@ import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
 import { useCart } from "@/context/CartContext";
 import { PRODUCTS } from "@/lib/products";
+import { computeTotals, promoDiscount, type Totals } from "@/lib/pricing";
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
@@ -44,12 +45,18 @@ export default function CheckoutPage() {
   const [promoApplied, setPromoApplied] = useState<{ code: string; amount: number; label: string; error?: boolean } | null>(null);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [orderNum, setOrderNum] = useState("");
+  const [serverTotals, setServerTotals] = useState<Totals | null>(null);
+  const [intentError, setIntentError] = useState<string | null>(null);
 
-  const shipping = subtotal === 0 ? 0 : (form.shipMethod === "express" ? 14.99 : (subtotal >= 75 ? 0 : 6.99));
-  const discount = promoApplied && !promoApplied.error ? promoApplied.amount : 0;
-  const taxable = Math.max(0, subtotal - discount);
-  const tax = parseFloat((taxable * 0.08875).toFixed(2));
-  const total = parseFloat((taxable + shipping + tax).toFixed(2));
+  // Shown while the buyer fills in the form. Once the payment is created, the
+  // server's totals (what Stripe will actually charge) replace these.
+  const activePromo = promoApplied && !promoApplied.error ? promoApplied.code : null;
+  const estimate = computeTotals({ subtotal, shipMethod: form.shipMethod, promoCode: activePromo });
+  const shown = serverTotals ?? estimate;
+  const shipping = shown.shipping;
+  const discount = shown.discount;
+  const tax = shown.tax;
+  const total = shown.total;
 
   const set = (k: keyof FormData, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -65,48 +72,48 @@ export default function CheckoutPage() {
     return Object.keys(e).length === 0;
   };
 
+  // The server prices the cart itself; the browser only says what is in it.
+  const createPayment = async (promoCode: string | null): Promise<boolean> => {
+    setIntentError(null);
+    try {
+      const res = await fetch("/api/stripe/payment-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: form.email,
+          shipMethod: form.shipMethod,
+          promoCode,
+          items: items.map((i) => ({ productId: i.productId, size: i.size, color: i.color, qty: i.qty })),
+          customer: {
+            firstName: form.firstName,
+            lastName: form.lastName,
+            phone: form.phone,
+            address: [form.address, form.apt, form.city, form.state, form.zip].filter(Boolean).join(", "),
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.clientSecret) {
+        setIntentError(data.error ?? "We couldn't start the payment. Please try again.");
+        return false;
+      }
+      setClientSecret(data.clientSecret);
+      setServerTotals(data.totals ?? null);
+      return true;
+    } catch {
+      setIntentError("We couldn't start the payment. Check your connection and try again.");
+      return false;
+    }
+  };
+
   const goNext = async () => {
     if (step === "info") {
       if (!validate(["email", "firstName", "lastName", "address", "city", "zip"])) return;
       setStep("shipping");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } else if (step === "shipping") {
-      // Create payment intent before showing payment step
-      try {
-        const res = await fetch("/api/stripe/payment-intent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: Math.round(total * 100),
-            email: form.email,
-            metadata: {
-              firstName: form.firstName,
-              lastName: form.lastName,
-              address: [form.address, form.apt, form.city, form.state, form.zip].filter(Boolean).join(", "),
-              shipMethod: form.shipMethod,
-              subtotal: subtotal.toFixed(2),
-              shipping: shipping.toFixed(2),
-              tax: tax.toFixed(2),
-              items: JSON.stringify(
-                items.map((item) => {
-                  const p = PRODUCTS.find((p) => p.id === item.productId);
-                  return {
-                    name: p?.name ?? item.productId,
-                    size: item.size,
-                    color: item.color ?? "",
-                    qty: item.qty,
-                    price: p?.salePrice ?? p?.price ?? 0,
-                  };
-                })
-              ).slice(0, 500),
-            },
-          }),
-        });
-        const data = await res.json();
-        if (data.clientSecret) setClientSecret(data.clientSecret);
-      } catch {
-        // no Stripe key — demo mode, clientSecret stays null
-      }
+      // Create the payment before showing the payment step
+      if (!(await createPayment(activePromo))) return;
       setStep("payment");
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -114,14 +121,28 @@ export default function CheckoutPage() {
 
   const goBack = () => {
     if (step === "shipping") setStep("info");
-    else if (step === "payment") setStep("shipping");
+    else if (step === "payment") {
+      // Going back may change shipping or the cart, so the payment is re-created on the way forward.
+      setClientSecret(null);
+      setServerTotals(null);
+      setStep("shipping");
+    }
   };
 
-  const applyPromo = () => {
+  const applyPromo = async () => {
     const code = promo.trim().toUpperCase();
-    if (code === "NYACK10") setPromoApplied({ code, amount: subtotal * 0.1, label: "10% off (NYACK10)" });
-    else if (code === "PRINT5") setPromoApplied({ code, amount: 5, label: "$5 off (PRINT5)" });
-    else setPromoApplied({ code, amount: 0, label: "", error: true });
+    const found = promoDiscount(code, subtotal);
+    if (!found) {
+      setPromoApplied({ code, amount: 0, label: "", error: true });
+      return;
+    }
+    setPromoApplied(found);
+    // A code added on the payment step changes the amount, so re-create the payment.
+    if (step === "payment") {
+      setClientSecret(null);
+      setServerTotals(null);
+      await createPayment(found.code);
+    }
   };
 
   const onPaymentSuccess = () => {
@@ -188,7 +209,13 @@ export default function CheckoutPage() {
                   <PaymentStep onSuccess={onPaymentSuccess} total={total} />
                 </Elements>
               ) : step === "payment" && (
-                <DemoPaymentStep onSuccess={onPaymentSuccess} total={total} />
+                // No fake "demo" payment: without a real Stripe payment there is nothing to pay.
+                <div role="status" style={{ padding: "24px 0", fontSize: 15, color: intentError ? "var(--rut-destructive)" : "var(--rut-fg-500)" }}>
+                  {intentError ?? "Preparing secure payment\u2026"}
+                </div>
+              )}
+              {step === "shipping" && intentError && (
+                <p role="alert" style={{ marginTop: 16, fontSize: 14, color: "var(--rut-destructive)" }}>{intentError}</p>
               )}
 
               {/* Nav buttons */}
@@ -437,27 +464,6 @@ function PaymentStep({ onSuccess, total }: { onSuccess: () => void; total: numbe
   );
 }
 
-// ─── Demo payment (no Stripe key configured) ───
-function DemoPaymentStep({ onSuccess, total }: { onSuccess: () => void; total: number }) {
-  const [submitting, setSubmitting] = useState(false);
-  const handleSubmit = () => {
-    setSubmitting(true);
-    setTimeout(() => { setSubmitting(false); onSuccess(); }, 1400);
-  };
-  return (
-    <>
-      <StepHeading num="03" title="Pay securely" sub="Demo mode — no real payment will be charged." />
-      <div style={{ padding: 20, background: "var(--rut-lavender-bg)", borderRadius: 12, border: "1px solid var(--rut-lavender-border)", fontSize: 14, color: "var(--rut-fg-700)", marginBottom: 16 }}>
-        Add <code style={{ background: "#fff", padding: "2px 6px", borderRadius: 4 }}>NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY</code> to your <code style={{ background: "#fff", padding: "2px 6px", borderRadius: 4 }}>.env.local</code> to enable real Stripe payments.
-      </div>
-      <div style={{ marginTop: 24, display: "flex", justifyContent: "flex-end" }}>
-        <button onClick={handleSubmit} className="btn-primary lg" disabled={submitting} style={{ minWidth: 220 }}>
-          {submitting ? <><span className="spinner" /> Processing...</> : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> Pay ${total.toFixed(2)}</>}
-        </button>
-      </div>
-    </>
-  );
-}
 
 // ─── Order summary sidebar ───
 function OrderSummary({ items, subtotal, shipping, tax, total, discount, promoApplied, promo, setPromo, applyPromo, shipMethod }: {
